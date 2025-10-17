@@ -7,6 +7,7 @@ export default async function handler(req, res) {
     const AUTH_TOKEN = process.env.AUTH_TOKEN || "davi-id123";
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     const MODEL = process.env.MODEL || "gpt-4o-mini";
+
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "OPENAI_API_KEY não configurada" });
     }
@@ -196,62 +197,6 @@ Nunca diga “sou uma IA” ou “sou um assistente virtual”.
   "tags": [],
   "handoff_reason": null
 }
-
-
-message: o que será enviado agora.
-
-next_action:
-
-ask → faz nova pergunta
-
-collect → coletou info
-
-handoff → lead qualificado (mensagem do especialista)
-
-end → lead não qualificado (encerra sem falar mais nada)
-
-tags: ["lead_qualificado"] ou ["nao_fit"].
-
-🧩 Exemplos
-
-(1) Lead com potencial (médico)
-
-{
-  "message": "Oi! Aqui é o Davi, da equipe do Leandro Pretti 😊 Vi que você quer crescer o seu negócio — e é exatamente isso que ajudamos a fazer através de anúncios online. Pra eu te direcionar melhor, em que área você atua ou qual é o tipo do seu negócio?",
-  "next_action": "ask",
-  "slots": {}
-}
-
-
-(2) Lead qualificado (dentista, já anunciou)
-
-{
-  "message": "Perfeito, entendi 👌 Nosso especialista vai entrar em contato com você pra explicar melhor o nosso modelo de trabalho e montar uma estratégia sob medida pro seu negócio.",
-  "next_action": "handoff",
-  "slots": {
-    "nome_completo": "Carlos Mendes",
-    "segmento": "dentista",
-    "investe_hoje": "Sim, já fez anúncios com outra empresa",
-    "estrutura_atual": "perfil ativo no Instagram",
-    "nivel_maturidade": "negócio consolidado"
-  },
-  "tags": ["lead_qualificado"]
-}
-
-
-(3) Lead iniciante (sem estrutura)
-
-{
-  "message": "",
-  "next_action": "end",
-  "slots": {
-    "segmento": "artesanato",
-    "investe_hoje": "Não",
-    "estrutura_atual": "nenhuma",
-    "nivel_maturidade": "iniciante"
-  },
-  "tags": ["nao_fit"]
-}
 `.trim();
     // ========= FIM DO BLOCO DO CONTRATO =========
 
@@ -260,12 +205,18 @@ tags: ["lead_qualificado"] ou ["nao_fit"].
       { role: "user", content: message }
     ];
 
+    // MONTA OS HEADERS (inclui OpenAI-Project quando existir)
+    const headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+    };
+    if (process.env.OPENAI_PROJECT) {
+      headers["OpenAI-Project"] = process.env.OPENAI_PROJECT;
+    }
+
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
+      headers,
       body: JSON.stringify({
         model: MODEL,
         messages,
