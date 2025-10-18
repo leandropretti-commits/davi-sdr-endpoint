@@ -17,9 +17,9 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "não autorizado" });
     }
 
-    const { message = "Olá" } = req.body || {};
+    const { message = "Olá", contact = {}, context = {} } = req.body || {};
 
-    // ========= COLE O CONTRATO ENTRE AS DUAS CRASES ABAIXO =========
+    // ========= BLOCO DO CONTRATO =========
     const SYSTEM_PROMPT = `
 🧠 CONTRATO DO AGENTE — DAVI (V3)
 
@@ -197,18 +197,25 @@ Nunca diga “sou uma IA” ou “sou um assistente virtual”.
   "tags": [],
   "handoff_reason": null
 }
-`.trim();
+
+────────────────────────────────────────────────────────────────
+
+IMPORTANTE PARA INTEGRAÇÃO (NÃO REMOVER):
+- Responda **APENAS** em JSON, sem texto fora do JSON.
+- Use sempre as chaves exatamente: \`message\` (string) e \`next_action\` (uma de: \`ask\`, \`collect\`, \`handoff\`, \`end\`).
+- Se não tiver certeza sobre o próximo passo, use \`next_action\`: \`ask\`.
+- Nunca envolva a resposta em code-fence (ex.: \`\`\`json ... \`\`\`) e nunca retorne JSON dentro de string.
+    `.trim();
     // ========= FIM DO BLOCO DO CONTRATO =========
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: message }
+      { role: "user", content: typeof message === "string" ? message : JSON.stringify({ message, contact, context }) }
     ];
 
-    // MONTA OS HEADERS (inclui OpenAI-Project quando existir)
     const headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+      "Authorization": `Bearer ${OPENAI_API_KEY}`
     };
     if (process.env.OPENAI_PROJECT) {
       headers["OpenAI-Project"] = process.env.OPENAI_PROJECT;
@@ -220,17 +227,113 @@ Nunca diga “sou uma IA” ou “sou um assistente virtual”.
       body: JSON.stringify({
         model: MODEL,
         messages,
-        temperature: 0.3
+        temperature: 0.3,
+        response_format: { type: "json_object" }
       })
     });
 
     const data = await r.json();
     if (!r.ok) return res.status(500).json({ error: "OpenAI error", detail: data });
 
-    const reply = data.choices?.[0]?.message?.content?.trim() || "Desculpe, não consegui entender.";
-    return res.status(200).json({ ok: true, reply });
+    const raw = (data.choices?.[0]?.message?.content ?? "").trim();
+    const normalized = normalizeAi(raw);
+
+    return res.status(200).json({
+      ok: true,
+      message: normalized.message || "",
+      next_action: normalized.next_action || "ask",
+      slots: normalized.slots, // agora sempre no shape do contrato
+      tags: normalized.tags ?? [],
+      handoff_reason: normalized.handoff_reason ?? null,
+      reply: normalized.message || ""
+    });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: "erro interno" });
+    return res.status(200).json({
+      ok: true,
+      message: "Tive um pico aqui rapidinho — pode me dizer de novo? Já continuo daqui 🤝",
+      next_action: "ask",
+      reply: "Tive um pico aqui rapidinho — pode me dizer de novo? Já continuo daqui 🤝"
+    });
   }
+}
+
+function normalizeAi(aiRaw) {
+  if (aiRaw && typeof aiRaw === "object") {
+    return shape(aiRaw);
+  }
+
+  let text = String(aiRaw || "").trim();
+
+  // (1) Regex corrigida: usa \s e [\s\S] com uma barra invertida
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) text = fenceMatch[1].trim();
+
+  const parsed = tryParseJSON(text);
+  if (parsed) {
+    // Desenrola caso venha JSON dentro de JSON (campo reply)
+    if (typeof parsed.reply === "string") {
+      const inner = tryParseJSON(parsed.reply);
+      if (inner) {
+        const shaped = shape(inner);
+        shaped.slots ??= parsed.slots;
+        shaped.tags ??= parsed.tags;
+        shaped.handoff_reason ??= parsed.handoff_reason;
+        return shaped;
+      }
+    }
+    return shape(parsed);
+  }
+
+  // Fallback em texto cru
+  return shape({ message: text, next_action: "ask" });
+}
+
+function tryParseJSON(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function shape(obj) {
+  // (2) Normaliza e valida next_action
+  const coercedNext = coalesceString(obj?.next_action, "ask").toLowerCase();
+  const allowed = new Set(["ask", "collect", "handoff", "end"]);
+  const next_action = allowed.has(coercedNext) ? coercedNext : "ask";
+
+  // (3) Slots: sempre retorna o shape do contrato
+  const baseSlots = {
+    nome_completo: null,
+    segmento: null,
+    investe_hoje: null,
+    estrutura_atual: null,
+    nivel_maturidade: null
+  };
+
+  const incomingSlots = (obj && typeof obj.slots === "object" && obj.slots) || null;
+  const slots = incomingSlots
+    ? {
+        ...baseSlots,
+        ...Object.fromEntries(
+          Object.entries(incomingSlots).map(([k, v]) => [k, v === undefined ? null : v])
+        )
+      }
+    : baseSlots;
+
+  return {
+    message: coalesceString(obj?.message, obj?.reply, ""),
+    next_action,
+    slots,
+    tags: Array.isArray(obj?.tags) ? obj.tags : [],
+    handoff_reason: typeof obj?.handoff_reason === "string" ? obj.handoff_reason : null
+  };
+}
+
+function coalesceString(...vals) {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return "";
 }
